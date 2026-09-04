@@ -10,6 +10,7 @@ import jakarta.ws.rs.PUT;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 
@@ -22,32 +23,53 @@ import java.util.Map;
 public class FeatureFlagResource {
 
     @GET
-    public List<FeatureFlag> getAllFlags() {
-        return FeatureFlag.listAll();
+    public List<FeatureFlag> getAllFlags(
+            @QueryParam("environment") Environment environment
+    ) {
+
+        if (environment == null) {
+            return FeatureFlag.listAll();
+        }
+
+        return FeatureFlag.list(
+                "environment",
+                environment
+        );
     }
 
     @POST
     @Transactional
-    public Response createFlag(@Valid FeatureFlag request) {
+    public Response createFlag(
+            @Valid FeatureFlag request
+    ) {
+
+        String trimmedKey = request.key.trim();
 
         FeatureFlag existingFlag =
-                FeatureFlag.find("key", request.key).firstResult();
+                FeatureFlag.find(
+                        "key = ?1 and environment = ?2",
+                        trimmedKey,
+                        request.environment
+                ).firstResult();
 
         if (existingFlag != null) {
             return Response
                     .status(Response.Status.CONFLICT)
-                    .entity(Map.of(
-                            "message",
-                            "A feature flag with this key already exists"
-                    ))
+                    .entity(
+                            Map.of(
+                                    "message",
+                                    "A feature flag with this key already exists in this environment"
+                            )
+                    )
                     .build();
         }
 
-        FeatureFlag created = new FeatureFlag(
-                request.key.trim(),
-                request.environment,
-                request.enabled
-        );
+        FeatureFlag created =
+                new FeatureFlag(
+                        trimmedKey,
+                        request.environment,
+                        request.enabled
+                );
 
         created.persist();
 
@@ -62,72 +84,90 @@ public class FeatureFlagResource {
     @Transactional
     public Response updateFlag(
             @PathParam("id") Long id,
-            @Valid FeatureFlag request) {
+            @Valid FeatureFlag request
+    ) {
 
-        FeatureFlag flag = FeatureFlag.findById(id);
+        FeatureFlag flag =
+                FeatureFlag.findById(id);
 
         if (flag == null) {
             return Response
                     .status(Response.Status.NOT_FOUND)
-                    .entity(Map.of(
-                            "message",
-                            "Feature flag not found"
-                    ))
+                    .entity(
+                            Map.of(
+                                    "message",
+                                    "Feature flag not found"
+                            )
+                    )
                     .build();
         }
 
+        String trimmedKey = request.key.trim();
+
         FeatureFlag duplicate =
                 FeatureFlag.find(
-                        "key = ?1 and id <> ?2",
-                        request.key,
+                        "key = ?1 and environment = ?2 and id <> ?3",
+                        trimmedKey,
+                        request.environment,
                         id
                 ).firstResult();
 
         if (duplicate != null) {
             return Response
                     .status(Response.Status.CONFLICT)
-                    .entity(Map.of(
-                            "message",
-                            "A feature flag with this key already exists"
-                    ))
+                    .entity(
+                            Map.of(
+                                    "message",
+                                    "A feature flag with this key already exists in this environment"
+                            )
+                    )
                     .build();
         }
 
-        flag.key = request.key.trim();
+        flag.key = trimmedKey;
         flag.environment = request.environment;
         flag.enabled = request.enabled;
 
-        return Response.ok(flag).build();
+        return Response
+                .ok(flag)
+                .build();
     }
 
     @PUT
     @Path("/{id}/toggle")
     @Transactional
     public Response toggleFlag(
-            @PathParam("id") Long id) {
+            @PathParam("id") Long id
+    ) {
 
-        FeatureFlag flag = FeatureFlag.findById(id);
+        FeatureFlag flag =
+                FeatureFlag.findById(id);
 
         if (flag == null) {
             return Response
                     .status(Response.Status.NOT_FOUND)
-                    .entity(Map.of(
-                            "message",
-                            "Feature flag not found"
-                    ))
+                    .entity(
+                            Map.of(
+                                    "message",
+                                    "Feature flag not found"
+                            )
+                    )
                     .build();
         }
 
         flag.enabled = !flag.enabled;
 
-        return Response.ok(flag).build();
+        return Response
+                .ok(flag)
+                .build();
     }
 
     @DELETE
     @Path("/{id}")
     @Transactional
     public Response deleteFlag(
-            @PathParam("id") Long id) {
+            @PathParam("id") Long id
+    ) {
 
         boolean deleted =
                 FeatureFlag.deleteById(id);
@@ -135,13 +175,17 @@ public class FeatureFlagResource {
         if (!deleted) {
             return Response
                     .status(Response.Status.NOT_FOUND)
-                    .entity(Map.of(
-                            "message",
-                            "Feature flag not found"
-                    ))
+                    .entity(
+                            Map.of(
+                                    "message",
+                                    "Feature flag not found"
+                            )
+                    )
                     .build();
         }
 
-        return Response.noContent().build();
+        return Response
+                .noContent()
+                .build();
     }
 }

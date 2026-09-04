@@ -5,7 +5,7 @@ import io.restassured.http.ContentType;
 import jakarta.transaction.Transactional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-
+import java.util.Locale;
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasSize;
@@ -13,7 +13,11 @@ import static org.hamcrest.Matchers.notNullValue;
 
 @QuarkusTest
 class FeatureFlagResourceTest {
-
+    static {
+        Locale.setDefault(Locale.US);
+        Locale.setDefault(Locale.Category.DISPLAY, Locale.US);
+        Locale.setDefault(Locale.Category.FORMAT, Locale.US);
+    }
     @BeforeEach
     @Transactional
     void cleanDatabase() {
@@ -35,7 +39,7 @@ class FeatureFlagResourceTest {
         String requestBody = """
                 {
                   "key": "payment-v2",
-                  "environment": "development",
+                  "environment": "DEV",
                   "enabled": true
                 }
                 """;
@@ -49,7 +53,7 @@ class FeatureFlagResourceTest {
                 .statusCode(201)
                 .body("id", notNullValue())
                 .body("key", equalTo("payment-v2"))
-                .body("environment", equalTo("development"))
+                .body("environment", equalTo("DEV"))
                 .body("enabled", equalTo(true));
     }
 
@@ -57,7 +61,7 @@ class FeatureFlagResourceTest {
     void shouldReturnCreatedFeatureFlagInList() {
         createFlag(
                 "checkout-v2",
-                "staging",
+                "TEST",
                 false
         );
 
@@ -68,22 +72,36 @@ class FeatureFlagResourceTest {
                 .statusCode(200)
                 .body("$", hasSize(1))
                 .body("[0].key", equalTo("checkout-v2"))
-                .body("[0].environment", equalTo("staging"))
+                .body("[0].environment", equalTo("TEST"))
                 .body("[0].enabled", equalTo(false));
     }
 
     @Test
-    void shouldRejectDuplicateKey() {
+    void shouldAllowSameKeyInDifferentEnvironments() {
+        createFlag("payment-v2", "DEV", true);
+        createFlag("payment-v2", "TEST", false);
+        createFlag("payment-v2", "PROD", false);
+
+        given()
+                .when()
+                .get("/api/flags")
+                .then()
+                .statusCode(200)
+                .body("$", hasSize(3));
+    }
+
+    @Test
+    void shouldRejectDuplicateKeyInSameEnvironment() {
         createFlag(
                 "duplicate-test",
-                "development",
+                "DEV",
                 true
         );
 
         String requestBody = """
                 {
                   "key": "duplicate-test",
-                  "environment": "production",
+                  "environment": "DEV",
                   "enabled": false
                 }
                 """;
@@ -91,16 +109,33 @@ class FeatureFlagResourceTest {
         given()
                 .contentType(ContentType.JSON)
                 .body(requestBody)
-                .when()
-                .post("/api/flags")
-                .then()
+                .expect()
                 .statusCode(409)
                 .body(
                         "message",
                         equalTo(
-                                "A feature flag with this key already exists"
+                                "A feature flag with this key already exists in this environment"
                         )
-                );
+                )
+                .when()
+                .post("/api/flags");
+    }
+
+    @Test
+    void shouldFilterFlagsByEnvironment() {
+        createFlag("feature-one", "DEV", true);
+        createFlag("feature-two", "DEV", false);
+        createFlag("feature-three", "PROD", true);
+
+        given()
+                .queryParam("environment", "DEV")
+                .when()
+                .get("/api/flags")
+                .then()
+                .statusCode(200)
+                .body("$", hasSize(2))
+                .body("[0].environment", equalTo("DEV"))
+                .body("[1].environment", equalTo("DEV"));
     }
 
     @Test
@@ -108,7 +143,7 @@ class FeatureFlagResourceTest {
         String requestBody = """
                 {
                   "key": "invalid-environment",
-                  "environment": "banana",
+                  "environment": "BANANA",
                   "enabled": true
                 }
                 """;
@@ -116,10 +151,10 @@ class FeatureFlagResourceTest {
         given()
                 .contentType(ContentType.JSON)
                 .body(requestBody)
+                .expect()
+                .statusCode(400)
                 .when()
-                .post("/api/flags")
-                .then()
-                .statusCode(400);
+                .post("/api/flags");
     }
 
     @Test
@@ -127,7 +162,7 @@ class FeatureFlagResourceTest {
         String requestBody = """
                 {
                   "key": "",
-                  "environment": "development",
+                  "environment": "DEV",
                   "enabled": true
                 }
                 """;
@@ -135,24 +170,24 @@ class FeatureFlagResourceTest {
         given()
                 .contentType(ContentType.JSON)
                 .body(requestBody)
+                .expect()
+                .statusCode(400)
                 .when()
-                .post("/api/flags")
-                .then()
-                .statusCode(400);
+                .post("/api/flags");
     }
 
     @Test
     void shouldUpdateFeatureFlag() {
-        Integer id = createFlag(
+        long id = createFlag(
                 "old-feature",
-                "development",
+                "DEV",
                 false
         );
 
         String updateRequest = """
                 {
                   "key": "new-feature",
-                  "environment": "production",
+                  "environment": "PROD",
                   "enabled": true
                 }
                 """;
@@ -164,17 +199,53 @@ class FeatureFlagResourceTest {
                 .put("/api/flags/" + id)
                 .then()
                 .statusCode(200)
-                .body("id", equalTo(id))
                 .body("key", equalTo("new-feature"))
-                .body("environment", equalTo("production"))
+                .body("environment", equalTo("PROD"))
                 .body("enabled", equalTo(true));
     }
 
     @Test
+    void shouldRejectDuplicateWhenUpdatingFlag() {
+        createFlag(
+                "payment-v2",
+                "PROD",
+                false
+        );
+
+        long devFlagId = createFlag(
+                "checkout-v2",
+                "DEV",
+                true
+        );
+
+        String updateRequest = """
+                {
+                  "key": "payment-v2",
+                  "environment": "PROD",
+                  "enabled": true
+                }
+                """;
+
+        given()
+                .contentType(ContentType.JSON)
+                .body(updateRequest)
+                .expect()
+                .statusCode(409)
+                .body(
+                        "message",
+                        equalTo(
+                                "A feature flag with this key already exists in this environment"
+                        )
+                )
+                .when()
+                .put("/api/flags/" + devFlagId);
+    }
+
+    @Test
     void shouldToggleFeatureFlag() {
-        Integer id = createFlag(
+        long id = createFlag(
                 "toggle-test",
-                "development",
+                "DEV",
                 false
         );
 
@@ -195,9 +266,9 @@ class FeatureFlagResourceTest {
 
     @Test
     void shouldDeleteFeatureFlag() {
-        Integer id = createFlag(
+        long id = createFlag(
                 "delete-test",
-                "staging",
+                "TEST",
                 true
         );
 
@@ -220,7 +291,7 @@ class FeatureFlagResourceTest {
         String requestBody = """
                 {
                   "key": "unknown",
-                  "environment": "development",
+                  "environment": "DEV",
                   "enabled": true
                 }
                 """;
@@ -228,31 +299,31 @@ class FeatureFlagResourceTest {
         given()
                 .contentType(ContentType.JSON)
                 .body(requestBody)
+                .expect()
+                .statusCode(404)
                 .when()
-                .put("/api/flags/999999")
-                .then()
-                .statusCode(404);
+                .put("/api/flags/999999");
     }
 
     @Test
     void shouldReturn404WhenTogglingUnknownFlag() {
         given()
+                .expect()
+                .statusCode(404)
                 .when()
-                .put("/api/flags/999999/toggle")
-                .then()
-                .statusCode(404);
+                .put("/api/flags/999999/toggle");
     }
 
     @Test
     void shouldReturn404WhenDeletingUnknownFlag() {
         given()
+                .expect()
+                .statusCode(404)
                 .when()
-                .delete("/api/flags/999999")
-                .then()
-                .statusCode(404);
+                .delete("/api/flags/999999");
     }
 
-    private Integer createFlag(
+    private long createFlag(
             String key,
             String environment,
             boolean enabled
@@ -269,7 +340,7 @@ class FeatureFlagResourceTest {
                 enabled
         );
 
-        return given()
+        Number id = given()
                 .contentType(ContentType.JSON)
                 .body(requestBody)
                 .when()
@@ -278,5 +349,7 @@ class FeatureFlagResourceTest {
                 .statusCode(201)
                 .extract()
                 .path("id");
+
+        return id.longValue();
     }
 }
